@@ -1,3 +1,5 @@
+import { formActionTargetsHost } from "./form-action-check.js";
+
 /*
  * Core Rules Engine (Shared)
  * Purpose: Allow playground/offline analysis of pasted HTML using the SAME
@@ -285,10 +287,12 @@ function runBlockingRulesApprox(blockingRules, pageSource, pageText, url) {
           const mustNotContain = rule.condition?.action_must_not_contain;
           const hasPw = rule.condition?.has_password_field;
           const forms = extractForms(pageSource);
-          const hasPassword = hasPw ? forms.some((f) => f.hasPassword) : true;
-          if (hasPassword && mustNotContain) {
+          if (mustNotContain) {
             for (const f of forms) {
-              if (f.action && f.action.includes(mustNotContain)) {
+              if (hasPw && !f.hasPassword) continue;
+              // Block when credentials are posted somewhere other than the required host.
+              // Empty actions submit back to the page URL.
+              if (!formActionTargetsHost(f.action, mustNotContain, url)) {
                 triggered.push({ id: rule.id, description: rule.description });
                 break;
               }
@@ -333,9 +337,10 @@ function runBlockingRulesApprox(blockingRules, pageSource, pageText, url) {
             const hasPassword = hasCred ? forms.some((f) => f.hasPassword) : true;
             let actionMismatch = true;
             if (formActionNotContain) {
-              actionMismatch = forms.some(
-                (f) => f.action && f.action.includes(formActionNotContain)
-              );
+              actionMismatch = forms.some((f) => {
+                if (hasCred && !f.hasPassword) return false;
+                return !formActionTargetsHost(f.action, formActionNotContain, url);
+              });
             }
             if (hasPassword && actionMismatch) {
               triggered.push({ id: rule.id, description: rule.description });

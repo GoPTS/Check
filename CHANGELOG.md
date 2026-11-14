@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Phishing pages hosted on `*.azurewebsites.net` or `*.azureedge.net` are scanned again. Those hostnames are customer-controlled and were previously treated as trusted Microsoft origins, which skipped detection entirely.
+- Credential-form blocking now compares the form action hostname. Embedding `login.microsoftonline.com` in a path or query string no longer counts as posting to Microsoft.
+- Phishing indicators still run when copied Microsoft markup produces a high legitimacy score on a domain that is not a trusted login origin.
+- A failed indicator web worker falls back to in-page scanning instead of being reported as a clean result.
+- The rules playground uses the same form-action hostname check, and blocks when the action does not target the required host.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00

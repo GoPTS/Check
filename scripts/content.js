@@ -136,6 +136,55 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
+   * True when a form action posts to requiredHost (or a subdomain of it).
+   * Paths and queries that merely mention the host do not count.
+   * Kept in sync with scripts/modules/form-action-check.js.
+   */
+  function formActionTargetsHost(actionValue, requiredHost, baseUrl) {
+    const expected = String(requiredHost || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\.$/, "");
+    if (!expected) return true;
+
+    const base = baseUrl || "https://invalid.invalid/";
+    const raw = actionValue == null ? "" : String(actionValue).trim();
+    let resolved;
+    try {
+      resolved = new URL(raw || base, base);
+    } catch (e) {
+      return false;
+    }
+
+    if (resolved.protocol !== "http:" && resolved.protocol !== "https:") {
+      return false;
+    }
+
+    const host = resolved.hostname.toLowerCase().replace(/\.$/, "");
+    return host === expected || host.endsWith("." + expected);
+  }
+
+  function indicatorScanSucceeded(result) {
+    return !!(result && result.success === true);
+  }
+
+  function shouldScanPhishingIndicators(score) {
+    if (typeof score === "number" && score <= 25) return false;
+    return true;
+  }
+
+  /**
+   * Raw form action, or the document URL when the form submits to itself.
+   * Uses the content attribute so a control named "action" cannot shadow it.
+   */
+  function readFormAction(form, baseUrl) {
+    if (!form || typeof form.getAttribute !== "function") return baseUrl;
+    const raw = form.getAttribute("action");
+    if (raw == null || String(raw).trim() === "") return baseUrl;
+    return String(raw).trim();
+  }
+
+  /**
    * Check if current URL is from a trusted Microsoft login domain
    * @param {string} url - The URL to check
    * @returns {boolean} - True if trusted login domain
@@ -1194,14 +1243,18 @@ if (window.checkExtensionLoaded) {
                   continue;
                 }
 
-                const action = form.action || location.href;
-                const actionContainsMicrosoft = action.includes(
-                  rule.condition?.action_must_not_contain || ""
+                const action = readFormAction(form, location.href);
+                const requiredHost =
+                  rule.condition?.action_must_not_contain || "";
+                const actionTargetsMicrosoft = formActionTargetsHost(
+                  action,
+                  requiredHost,
+                  location.href
                 );
 
-                if (!actionContainsMicrosoft) {
+                if (!actionTargetsMicrosoft) {
                   ruleTriggered = true;
-                  reason = `Form action "${action}" does not contain ${rule.condition?.action_must_not_contain}`;
+                  reason = `Form action "${action}" does not target ${requiredHost}`;
                   logger.warn(
                     `BLOCKING RULE TRIGGERED: ${rule.id}  ${rule.description} - ${reason}`
                   );
@@ -1265,12 +1318,16 @@ if (window.checkExtensionLoaded) {
                     if (!hasEmail && !hasPassword) continue;
                   }
 
-                  const action = form.action || location.href;
-                  const actionContainsMicrosoft = action.includes(
-                    rule.condition?.form_action_must_not_contain || ""
+                  const action = readFormAction(form, location.href);
+                  const requiredHost =
+                    rule.condition?.form_action_must_not_contain || "";
+                  const actionTargetsMicrosoft = formActionTargetsHost(
+                    action,
+                    requiredHost,
+                    location.href
                   );
 
-                  if (!actionContainsMicrosoft) {
+                  if (!actionTargetsMicrosoft) {
                     ruleTriggered = true;
                     reason = `CSS spoofing detected: ${cssMatches} Microsoft style indicators found, but form posts to "${action}" (not Microsoft)`;
                     logger.warn(
@@ -1562,7 +1619,8 @@ if (window.checkExtensionLoaded) {
               self.postMessage({
                 type: 'complete',
                 threats: threats,
-                score: totalScore
+                score: totalScore,
+                success: true
               });
             } catch (error) {
               self.postMessage({
@@ -1591,6 +1649,7 @@ if (window.checkExtensionLoaded) {
             total,
             currentIndicator,
             error,
+            success,
           } = e.data;
 
           if (type === "progress") {
@@ -1598,12 +1657,16 @@ if (window.checkExtensionLoaded) {
           } else if (type === "complete") {
             worker.terminate();
             URL.revokeObjectURL(blob);
-            resolve({ threats: threats || [], score: score || 0 });
+            resolve({
+              threats: threats || [],
+              score: score || 0,
+              success: success === true,
+            });
           } else if (type === "error") {
             worker.terminate();
             URL.revokeObjectURL(blob);
             logger.error("Web Worker error:", error);
-            resolve({ threats: [], score: 0 });
+            resolve({ threats: [], score: 0, success: false });
           }
         };
 
@@ -1611,14 +1674,14 @@ if (window.checkExtensionLoaded) {
           worker.terminate();
           URL.revokeObjectURL(blob);
           logger.error("Web Worker failed:", error);
-          resolve({ threats: [], score: 0 });
+          resolve({ threats: [], score: 0, success: false });
         };
 
         // Start background processing
         worker.postMessage({ indicators, pageSource, pageText, currentUrl });
       } catch (error) {
         logger.error("Failed to create Web Worker:", error);
-        resolve({ threats: [], score: 0 });
+        resolve({ threats: [], score: 0, success: false });
       }
     });
   }
@@ -1684,10 +1747,7 @@ if (window.checkExtensionLoaded) {
           currentUrl
         );
 
-        if (
-          backgroundResult &&
-          (backgroundResult.threats.length > 0 || backgroundResult.score >= 0)
-        ) {
+        if (indicatorScanSucceeded(backgroundResult)) {
           logger.log(`⏱️ PERF: Background processing completed successfully`);
 
           // Apply context filtering and SSO checks to background results
@@ -2095,8 +2155,14 @@ if (window.checkExtensionLoaded) {
                 rule.condition?.form_selector || "form"
               );
               for (const form of forms) {
-                const action = form.action || "";
-                if (action.includes(rule.condition?.contains || "")) {
+                const action = readFormAction(form, location.href);
+                if (
+                  formActionTargetsHost(
+                    action,
+                    rule.condition?.contains || "",
+                    location.href
+                  )
+                ) {
                   ruleTriggered = true;
                   break;
                 }
@@ -2108,7 +2174,7 @@ if (window.checkExtensionLoaded) {
                 rule.condition?.form_selector || "form"
               );
               for (const form of validationForms) {
-                const action = form.action || "";
+                const action = readFormAction(form, location.href);
                 const hasPasswordField = rule.condition?.has_password_field
                   ? form.querySelector('input[type="password"]')
                   : true;
@@ -2117,13 +2183,17 @@ if (window.checkExtensionLoaded) {
                   hasPasswordField &&
                   rule.condition?.action_must_not_contain
                 ) {
-                  // Rule triggers if form action does NOT contain the required domain
+                  // Rule triggers if form action does NOT target the required host
                   if (
-                    !action.includes(rule.condition.action_must_not_contain)
+                    !formActionTargetsHost(
+                      action,
+                      rule.condition.action_must_not_contain,
+                      location.href
+                    )
                   ) {
                     ruleTriggered = true;
                     logger.debug(
-                      `Form action validation failed: action="${action}" does not contain "${rule.condition.action_must_not_contain}"`
+                      `Form action validation failed: action="${action}" does not target "${rule.condition.action_must_not_contain}"`
                     );
                     break;
                   }
@@ -2259,11 +2329,13 @@ if (window.checkExtensionLoaded) {
                 ) {
                   const forms = document.querySelectorAll("form");
                   for (const form of forms) {
-                    const action = form.action || "";
+                    const action = readFormAction(form, location.href);
                     if (
                       rule.condition?.form_action_must_not_contain &&
-                      !action.includes(
-                        rule.condition.form_action_must_not_contain
+                      !formActionTargetsHost(
+                        action,
+                        rule.condition.form_action_must_not_contain,
+                        location.href
                       )
                     ) {
                       ruleTriggered = true;
@@ -3295,32 +3367,21 @@ if (window.checkExtensionLoaded) {
         return;
       }
 
-      // Step 7: Check if we can skip phishing indicators based on detection rules confidence
+      // Step 7: Phishing indicators. A high legitimacy score on a domain that
+      // already failed the trusted-origin check is built from markup a clone can
+      // copy (loginfmt, flowToken, aadcdn, and so on). Do not skip indicators
+      // because of that score. The low-score path stays fail-closed.
       let phishingResult = { threats: [], score: 0 };
       let skipPhishingIndicators = false;
 
-      if (detectionResult.score >= detectionResult.threshold) {
-        // High confidence legitimate page - skip phishing indicators entirely
-        logger.log(
-          `🟢 High confidence legitimate page (score: ${detectionResult.score} >= ${detectionResult.threshold}) - skipping ALL phishing indicators for performance`
-        );
-        skipPhishingIndicators = true;
-      } else if (detectionResult.score >= detectionResult.threshold * 0.8) {
-        // Medium-high confidence - run limited phishing indicators only for critical threats
-        logger.log(
-          `🟡 Medium-high confidence page (score: ${detectionResult.score}) - running critical phishing indicators only`
-        );
-        skipPhishingIndicators = true; // Skip for now, can be enhanced later with limited scanning
-      } else if (detectionResult.score <= 25) {
-        // Very low legitimacy score - likely phishing, skip indicators and handle as suspicious
+      if (!shouldScanPhishingIndicators(detectionResult.score)) {
         logger.warn(
           `🔴 Very low legitimacy score (${detectionResult.score} <= 25) - treating as suspicious without phishing indicators`
         );
         skipPhishingIndicators = true;
       } else {
-        // Uncertain legitimacy - run phishing indicators analysis
         logger.log(
-          `🟡 Uncertain legitimacy (score: ${detectionResult.score}) - running phishing indicators analysis`
+          `Running phishing indicators on untrusted origin (legitimacy score: ${detectionResult.score}/${detectionResult.threshold})`
         );
         phishingResult = await processPhishingIndicators();
       }
