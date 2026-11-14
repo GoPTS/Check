@@ -21,7 +21,6 @@
     "^https://[^.]*\\.hotmail\\.com$",
     "^https://[^.]*\\.outlook\\.com$",
     "^https://[^.]*\\.azure\\.com$",
-    "^https://[^.]*\\.azurewebsites\\.net$",
     "^https://[^.]*\\.msauth\\.net$",
     "^https://[^.]*\\.msftauth\\.net$",
     "^https://[^.]*\\.msftauthimages\\.net$",
@@ -29,7 +28,6 @@
     "^https://[^.]*\\.msidentity\\.com$",
     "^https://[^.]*\\.microsoftonline-p\\.com$",
     "^https://[^.]*\\.microsoftazuread-sso\\.com$",
-    "^https://[^.]*\\.azureedge\\.net$",
     "^https://[^.]*\\.bing\\.com$",
     "^https://.*\\.cloud\\.microsoft$",
     "^https://([^.]+\\.)*live\\.com(/.*)?$"
