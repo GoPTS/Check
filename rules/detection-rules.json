@@ -488,7 +488,7 @@
     },
     {
       "id": "phi_012_suspicious_resources",
-      "pattern": "(?=.*customcss)(?!.*aadcdn\\.msftauthimages\\.net)",
+      "pattern": "^(?=[\\s\\S]*customcss)(?![\\s\\S]*aadcdn\\.msftauthimages\\.net)",
       "flags": "i",
       "severity": "high",
       "description": "Custom CSS loaded from unauthorized domain",
@@ -498,7 +498,7 @@
     },
     {
       "id": "phi_006",
-      "pattern": "(?=.*(?:microsoft|office|365))(?=.*(?:login|password|signin))(?=.*form.*action)(?!.*login\\.microsoftonline\\.com)(?!.*\\.auth/login/)(?!.*azure\\s+static\\s+web\\s+apps)(?!.*easy\\s+auth)",
+      "pattern": "^(?=[\\s\\S]*(?:microsoft|office|365))(?=[\\s\\S]*(?:login|password|signin))(?=[\\s\\S]*form[\\s\\S]*action)(?![\\s\\S]*login\\.microsoftonline\\.com)(?![\\s\\S]*\\.auth/login/)(?![\\s\\S]*azure\\s+static\\s+web\\s+apps)(?![\\s\\S]*easy\\s+auth)",
       "flags": "i",
       "severity": "high",
       "description": "Microsoft-branded login form POST URL not pointing to login.microsoftonline.com",
@@ -508,7 +508,7 @@
     },
     {
       "id": "phi_010_aad_fingerprint",
-      "pattern": "(?=.*(?:loginfmt|i0116))(?=.*(?:idSIButton9|type=[\"']submit[\"']))(?!.*login\\.microsoftonline\\.com)",
+      "pattern": "^(?=[\\s\\S]*(?:loginfmt|i0116))(?=[\\s\\S]*(?:idSIButton9|type=[\"']submit[\"']))(?![\\s\\S]*login\\.microsoftonline\\.com)",
       "flags": "i",
       "severity": "critical",
       "description": "AAD-like login interface detected on non-Microsoft domain",
@@ -518,7 +518,7 @@
     },
     {
       "id": "phi_011_missing_elements",
-      "pattern": "(?=.*(?:microsoft|office|365))(?=.*(?:type=[\"']password[\"']|method=[\"']post[\"']))(?!.*(?:idPartnerPL|urlMsaSignUp|flowToken))",
+      "pattern": "^(?=[\\s\\S]*(?:microsoft|office|365))(?=[\\s\\S]*(?:type=[\"']password[\"']|method=[\"']post[\"']))(?![\\s\\S]*(?:idPartnerPL|urlMsaSignUp|flowToken))",
       "flags": "i",
       "severity": "high",
       "description": "Microsoft branding without required authentication elements",
@@ -528,7 +528,7 @@
     },
     {
       "id": "phi_013_form_action_mismatch",
-      "pattern": "(?=.*(?:microsoft|office|365))(?=.*(?:password|passwd))(?=.*action=)(?!.*login\\.microsoftonline\\.com)",
+      "pattern": "^(?=[\\s\\S]*(?:microsoft|office|365))(?=[\\s\\S]*(?:password|passwd))(?=[\\s\\S]*action=)(?![\\s\\S]*login\\.microsoftonline\\.com)",
       "flags": "i",
       "severity": "critical",
       "description": "Microsoft-branded password form with non-Microsoft action URL",
