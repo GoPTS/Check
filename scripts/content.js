@@ -29,6 +29,8 @@ if (window.checkExtensionLoaded) {
   let lastPageSourceScanTime = 0; // When the page source was captured
   let developerConsoleLoggingEnabled = false; // Cache for developer console logging setting
   let showingBanner = false; // Flag to prevent DOM monitoring loops when showing banners
+  let untrustedMsLogonActive = false; // Password posts on this document are an untrusted MS login clone
+  let pageBlockingEnabled = true;
   const MAX_SCANS = 5; // Prevent infinite scanning - reduced for performance
   const SCAN_COOLDOWN = 1200; // 1200ms between scans - increased for performance
   const WARNING_THRESHOLD = 3; // Block if 4+ warning threats found (escalation threshold)
@@ -1195,13 +1197,32 @@ if (window.checkExtensionLoaded) {
                 }
 
                 const action = form.action || location.href;
+                const requiredDestination =
+                  rule.condition?.action_must_not_contain || "";
                 const actionContainsMicrosoft = action.includes(
-                  rule.condition?.action_must_not_contain || ""
+                  requiredDestination
                 );
 
                 if (!actionContainsMicrosoft) {
                   ruleTriggered = true;
-                  reason = `Form action "${action}" does not contain ${rule.condition?.action_must_not_contain}`;
+                  reason = `Form action "${action}" does not contain ${requiredDestination}`;
+                  logger.warn(
+                    `BLOCKING RULE TRIGGERED: ${rule.id}  ${rule.description} - ${reason}`
+                  );
+                  break;
+                }
+
+                // form.action can stay on Microsoft while a submit control's
+                // formaction posts the password somewhere else.
+                const untrustedFormaction =
+                  globalThis.CheckSubmissionTargets?.findUntrustedFormaction(
+                    form,
+                    requiredDestination,
+                    location.href
+                  );
+                if (untrustedFormaction) {
+                  ruleTriggered = true;
+                  reason = `Submit control posts credentials to "${untrustedFormaction.raw}" instead of ${requiredDestination}`;
                   logger.warn(
                     `BLOCKING RULE TRIGGERED: ${rule.id}  ${rule.description} - ${reason}`
                   );
@@ -2357,6 +2378,7 @@ if (window.checkExtensionLoaded) {
 
       // Early exit if URL is in user allowlist (before any other checks)
       if (checkUserUrlAllowlist(window.location.href)) {
+        untrustedMsLogonActive = false;
         logger.log(
           `✅ URL ALLOWLISTED BY USER - No scanning needed, exiting immediately`
         );
@@ -2383,6 +2405,7 @@ if (window.checkExtensionLoaded) {
 
       // Check if page blocking is disabled
       const protectionEnabled = config.enablePageBlocking !== false;
+      pageBlockingEnabled = protectionEnabled;
       if (!protectionEnabled) {
         logger.log(
           "Page blocking disabled in settings - running analysis only (no protective action)"
@@ -2624,6 +2647,7 @@ if (window.checkExtensionLoaded) {
           setupDynamicScriptMonitoring();
         }
 
+        untrustedMsLogonActive = false;
         return; // EXIT IMMEDIATELY - can't be phishing on trusted domain
       }
 
@@ -2647,6 +2671,7 @@ if (window.checkExtensionLoaded) {
 
         // Don't show any badge for general Microsoft pages
         // Just exit silently - these are legitimate but not login pages
+        untrustedMsLogonActive = false;
         return; // EXIT - legitimate Microsoft domain, no scanning needed
       }
 
@@ -2672,6 +2697,7 @@ if (window.checkExtensionLoaded) {
           });
         }
 
+        untrustedMsLogonActive = false;
         return; // EXIT IMMEDIATELY - can't be phishing on excluded trusted domain
       }
 
@@ -2701,6 +2727,7 @@ if (window.checkExtensionLoaded) {
       // Step 5: Check if page is an MS logon page (using rule file requirements)
       const isMSLogon = isMicrosoftLogonPage();
       if (!isMSLogon) {
+        untrustedMsLogonActive = false;
         // Check if page has ANY Microsoft-related elements before running expensive phishing indicators
         const hasMSElements = hasMicrosoftElements();
 
@@ -2717,6 +2744,7 @@ if (window.checkExtensionLoaded) {
             setupDOMMonitoring();
             setupDynamicScriptMonitoring();
           }
+          untrustedMsLogonActive = false;
           return; // EXIT - No Microsoft elements detected initially, but monitoring for dynamic injection
         }
 
@@ -2988,6 +3016,7 @@ if (window.checkExtensionLoaded) {
         return;
       }
 
+      untrustedMsLogonActive = true;
       logger.warn(
         "🚨 MICROSOFT LOGON PAGE DETECTED ON NON-TRUSTED DOMAIN - ANALYZING THREAT"
       );
@@ -4734,14 +4763,76 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
-   * Initialize protection when DOM is ready
+   * Re-check the URL that will actually receive a password at submit time.
+   * Scan-time form.action can be a real Microsoft URL while the submitter
+   * posts elsewhere, or script can replace the action in an earlier submit listener.
    */
+  function setupCredentialSubmitGuard() {
+    if (window.__checkCredentialSubmitGuard) return;
+    window.__checkCredentialSubmitGuard = true;
+
+    window.addEventListener(
+      "submit",
+      (event) => {
+        try {
+          const form = event.target;
+          if (!form || String(form.tagName).toUpperCase() !== "FORM") return;
+          if (!form.querySelector('input[type="password"]')) return;
+          if (!untrustedMsLogonActive || !pageBlockingEnabled) return;
+          if (!detectionRules || !globalThis.CheckSubmissionTargets) return;
+
+          const markerRule = (detectionRules.blocking_rules || []).find(
+            (rule) =>
+              rule.type === "form_action_validation" &&
+              rule.condition?.action_must_not_contain
+          );
+          const marker = markerRule?.condition?.action_must_not_contain;
+          if (!marker) return;
+
+          const raw = globalThis.CheckSubmissionTargets.effectiveSubmissionUrl(
+            form,
+            event.submitter,
+            location.href
+          );
+          if (
+            globalThis.CheckSubmissionTargets.isAllowedCredentialDestination(
+              raw,
+              marker,
+              location.href
+            )
+          ) {
+            return;
+          }
+
+          event.preventDefault();
+          event.stopPropagation();
+          const reason = `Credential form submitted to "${raw}" instead of ${marker}`;
+          logger.warn(`BLOCKING RULE TRIGGERED: form_post_not_microsoft - ${reason}`);
+          showBlockingOverlay(reason, {
+            reason: reason,
+            rule: {
+              id: "form_post_not_microsoft",
+              description: reason,
+            },
+          });
+          disableFormSubmissions();
+          disableCredentialInputs();
+        } catch (error) {
+          logger.warn("Credential submit guard failed:", error.message);
+        }
+      },
+      false
+    );
+  }
+
   function initializeProtection() {
     try {
       logger.log("Initializing Check");
 
       // Setup console capture early to catch all logs
       setupConsoleCapture();
+
+      setupCredentialSubmitGuard();
 
       // Apply branding colors first
       applyBrandingColors();

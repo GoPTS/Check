@@ -1612,7 +1612,10 @@ class CheckBackground {
       await safe(
         chrome.scripting.executeScript({
           target: { tabId },
-          files: ["scripts/content.js"],
+          files: [
+            "scripts/modules/submission-targets.js",
+            "scripts/content.js",
+          ],
         })
       );
     } catch (error) {
