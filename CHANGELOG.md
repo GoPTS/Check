@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Domain exclusion now compares the page origin. A query or fragment such as `https://evil.example?.google.com/login` no longer impersonates an excluded host and skips phishing detection.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00

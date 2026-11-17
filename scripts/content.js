@@ -1927,21 +1927,45 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
+   * Domain exclusion patterns describe hosts, but they are regular expressions.
+   * Match the page origin only. Testing the full href lets a query or fragment
+   * on an attacker host satisfy a pattern such as `[^/]*\.google\.com`
+   * (`https://evil.example?.google.com/login`), which skips phishing scans.
+   */
+  function matchesDomainExclusion(url, patterns) {
+    if (!patterns || patterns.length === 0) return false;
+
+    let origin;
+    try {
+      origin = new URL(url).origin;
+    } catch (error) {
+      return false;
+    }
+    // Opaque origins (for example about:blank) are the string "null".
+    if (!origin || origin === "null") return false;
+
+    for (const pattern of patterns) {
+      try {
+        if (new RegExp(pattern, "i").test(origin)) return true;
+      } catch (error) {
+        if (typeof logger !== "undefined" && logger.warn) {
+          logger.warn(`Invalid exclusion pattern: ${pattern}`);
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
    * Check if domain should be excluded from phishing detection
    * Now includes both detection rules exclusions AND user-configured URL allowlist
    */
   function checkDomainExclusion(url) {
     if (detectionRules?.exclusion_system?.domain_patterns) {
-      const rulesExcluded =
-        detectionRules.exclusion_system.domain_patterns.some((pattern) => {
-          try {
-            const regex = new RegExp(pattern, "i");
-            return regex.test(url);
-          } catch (error) {
-            logger.warn(`Invalid exclusion pattern: ${pattern}`);
-            return false;
-          }
-        });
+      const rulesExcluded = matchesDomainExclusion(
+        url,
+        detectionRules.exclusion_system.domain_patterns
+      );
 
       if (rulesExcluded) {
         logger.log(`✅ URL excluded by detection rules: ${url}`);
