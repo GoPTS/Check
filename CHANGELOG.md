@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Fixed untrusted Microsoft login clones that include a known-rogue OAuth `client_id`. Those pages were warned and then skipped, so the password form stayed usable. They are now blocked when page blocking is enabled. Real Microsoft login hosts are still warned only.
+
+
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00
