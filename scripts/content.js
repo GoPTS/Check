@@ -3054,24 +3054,68 @@ if (window.checkExtensionLoaded) {
           }
 
           const appName = clientInfo.appName || "Unknown Application";
-          showWarningBanner(
-            `CRITICAL WARNING: Rogue OAuth Application Detected - ${appName}`,
-            {
-              type: "rogue_app_on_legitimate_domain",
-              severity: "critical",
-              reason: clientInfo.reason,
-              clientId: clientInfo.clientId,
-              appInfo: clientInfo.appInfo,
-            }
+          const rogueReason = `Rogue OAuth application detected: ${clientInfo.reason}`;
+          const rogueResponse = responseToRogueAppOnLoginPage(
+            isTrustedLoginDomain(window.location.href),
+            protectionEnabled
           );
+
+          // Store detection result as critical threat
+          lastDetectionResult = {
+            verdict: "rogue-app",
+            isSuspicious: true,
+            isBlocked: rogueResponse === "block",
+            threats: [
+              {
+                type: "rogue-oauth-app",
+                description: rogueReason,
+              },
+            ],
+            reason: rogueReason,
+            score: 0, // Critical threat gets lowest score
+            threshold: 85,
+          };
+
+          if (rogueResponse === "block") {
+            logger.error(
+              "🛡️ PROTECTION ACTIVE: Blocking untrusted Microsoft login page that carries a rogue OAuth client"
+            );
+            showBlockingOverlay(rogueReason, {
+              threats: [
+                {
+                  type: "rogue-oauth-app",
+                  description: rogueReason,
+                  severity: "critical",
+                },
+              ],
+              severity: "critical",
+            });
+            disableFormSubmissions();
+            disableCredentialInputs();
+            stopDOMMonitoring();
+          } else {
+            showWarningBanner(
+              `CRITICAL WARNING: Rogue OAuth Application Detected - ${appName}`,
+              {
+                type: "rogue_app_on_legitimate_domain",
+                severity: "critical",
+                reason: clientInfo.reason,
+                clientId: clientInfo.clientId,
+                appInfo: clientInfo.appInfo,
+              }
+            );
+          }
 
           // Log as a critical threat event
           logProtectionEvent({
-            type: "threat_detected",
-            action: "warned", // Rogue apps are warned about, not blocked
+            type:
+              rogueResponse === "block"
+                ? "threat_blocked"
+                : "threat_detected",
+            action: rogueResponse === "block" ? "blocked" : "warned",
             url: location.href,
             origin: location.origin,
-            reason: `Rogue OAuth application detected: ${clientInfo.reason}`,
+            reason: rogueReason,
             severity: "critical",
             redirectTo: redirectHostname,
             clientId: clientInfo.clientId,
@@ -3091,23 +3135,7 @@ if (window.checkExtensionLoaded) {
             redirectTo: redirectHostname,
           });
 
-          // Store detection result as critical threat
-          lastDetectionResult = {
-            verdict: "rogue-app",
-            isSuspicious: true,
-            isBlocked: false, // Rogue apps get warnings, not blocks
-            threats: [
-              {
-                type: "rogue-oauth-app",
-                description: `Rogue OAuth application: ${clientInfo.reason}`,
-              },
-            ],
-            reason: `Rogue OAuth application detected: ${clientInfo.reason}`,
-            score: 0, // Critical threat gets lowest score
-            threshold: 85,
-          };
-
-          return; // Stop processing as this is now treated as a critical threat
+          return;
         }
       } catch (messageError) {
         logger.warn(
@@ -4518,6 +4546,20 @@ if (window.checkExtensionLoaded) {
    */
   function isTrustedOrigin(url) {
     return isTrustedLoginDomain(url);
+  }
+
+  /**
+   * What to do when a known-rogue OAuth client_id is on a Microsoft login page.
+   * The real Microsoft login host is only warned: blocking it would break sign-in.
+   * Any other host is blocked while page blocking is enabled. Warning and
+   * returning there left the password form usable.
+   * @returns {"warn"|"block"}
+   */
+  function responseToRogueAppOnLoginPage(onTrustedLoginHost, protectionEnabled) {
+    if (onTrustedLoginHost === true || protectionEnabled !== true) {
+      return "warn";
+    }
+    return "block";
   }
 
   /**
