@@ -34,6 +34,62 @@ if (window.checkExtensionLoaded) {
   const WARNING_THRESHOLD = 3; // Block if 4+ warning threats found (escalation threshold)
   let initialBody; // Reference to the initial body element
 
+  function deepDom() {
+    return globalThis.checkDeepDom || null;
+  }
+
+  // Light-DOM serialization misses markup inside shadow roots. Prefer the
+  // helper that also walks open and closed roots, and fall back if it did
+  // not load so scanning still runs.
+  function getPageSource() {
+    const api = deepDom();
+    if (api) return api.getDeepPageSource(document);
+    return document.documentElement ? document.documentElement.outerHTML : "";
+  }
+
+  function getPageText() {
+    const api = deepDom();
+    if (api) return api.getDeepPageText(document);
+    return document.body?.textContent || "";
+  }
+
+  function queryAll(selector, root) {
+    const start = root || document;
+    const api = deepDom();
+    if (api) return api.queryAllDeep(start, selector);
+    try {
+      return Array.from(start.querySelectorAll(selector));
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function queryOne(selector, root) {
+    const found = queryAll(selector, root);
+    return found.length ? found[0] : null;
+  }
+
+  function formMatches(form, selector) {
+    if (!form) return false;
+    return queryAll(selector, form).length > 0;
+  }
+
+  function observeKnownShadowRoots(start) {
+    const api = deepDom();
+    if (!domObserver || !api || !start) return;
+    for (const root of api.listShadowRoots(start)) {
+      try {
+        domObserver.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: false,
+        });
+      } catch (error) {
+        // The root may already be observed or detached.
+      }
+    }
+  }
+
   // Console log capturing
   let capturedLogs = [];
   const MAX_LOGS = 100; // Limit the number of stored logs
@@ -327,7 +383,7 @@ if (window.checkExtensionLoaded) {
    */
   function testDetectionPatterns() {
     console.log("🔍 MANUAL DETECTION TESTING");
-    const pageSource = document.documentElement.outerHTML;
+    const pageSource = getPageSource();
 
     // Test each pattern individually
     const patterns = [
@@ -456,8 +512,8 @@ if (window.checkExtensionLoaded) {
       `📋 Found ${detectionRules.phishing_indicators.length} phishing indicators to test`
     );
 
-    const pageSource = document.documentElement.outerHTML;
-    const pageText = document.body?.textContent || "";
+    const pageSource = getPageSource();
+    const pageText = getPageText();
     const currentUrl = window.location.href;
 
     console.log(`📄 Page source length: ${pageSource.length} chars`);
@@ -643,15 +699,15 @@ if (window.checkExtensionLoaded) {
           },
           pageSource: {
             content:
-              lastScannedPageSource || document.documentElement.outerHTML,
+              lastScannedPageSource || getPageSource(),
             length: (
-              lastScannedPageSource || document.documentElement.outerHTML
+              lastScannedPageSource || getPageSource()
             ).length,
             scanTime: lastPageSourceScanTime || Date.now(),
           },
         },
         consoleLogs: capturedLogs.slice(), // Copy the captured logs
-        pageSource: lastScannedPageSource || document.documentElement.outerHTML,
+        pageSource: lastScannedPageSource || getPageSource(),
         timestamp: Date.now(),
       };
 
@@ -789,21 +845,22 @@ if (window.checkExtensionLoaded) {
     });
 
     // Check for forms
-    const forms = document.querySelectorAll("form");
+    const forms = queryAll("form");
     console.log(
       "Forms Found:",
       Array.from(forms).map((form) => ({
         action: form.action || "none",
         method: form.method || "get",
-        hasPasswordField: !!form.querySelector('input[type="password"]'),
-        hasEmailField: !!form.querySelector(
+        hasPasswordField: formMatches(form, 'input[type="password"]'),
+        hasEmailField: formMatches(
+          form,
           'input[type="email"], input[name*="email"], input[id*="email"]'
         ),
       }))
     );
 
     // Check for suspicious patterns in page source
-    const pageSource = document.documentElement.outerHTML;
+    const pageSource = getPageSource();
     const suspiciousPatterns = [
       {
         name: "Microsoft mentions",
@@ -820,11 +877,11 @@ if (window.checkExtensionLoaded) {
       },
       {
         name: "Password fields",
-        count: document.querySelectorAll('input[type="password"]').length,
+        count: queryAll('input[type="password"]').length,
       },
       {
         name: "Email fields",
-        count: document.querySelectorAll('input[type="email"]').length,
+        count: queryAll('input[type="email"]').length,
       },
     ];
     console.log("Content Analysis:", suspiciousPatterns);
@@ -861,8 +918,8 @@ if (window.checkExtensionLoaded) {
       }
 
       const requirements = detectionRules.m365_detection_requirements;
-      const pageSource = document.documentElement.outerHTML;
-      const pageText = document.body?.textContent || "";
+      const pageSource = getPageSource();
+      const pageText = getPageText();
 
       // Lower threshold - just need ANY Microsoft-related elements
       let totalWeight = 0;
@@ -980,7 +1037,7 @@ if (window.checkExtensionLoaded) {
       }
 
       const requirements = detectionRules.m365_detection_requirements;
-      const pageSource = document.documentElement.outerHTML;
+      const pageSource = getPageSource();
 
       // Store the page source for debugging purposes
       lastScannedPageSource = pageSource;
@@ -1182,14 +1239,14 @@ if (window.checkExtensionLoaded) {
           switch (rule.type) {
             case "form_action_validation":
               // Check: form post url is not login.microsoftonline.com -> Block
-              const forms = document.querySelectorAll(
+              const forms = queryAll(
                 rule.condition?.form_selector || "form"
               );
               for (const form of forms) {
                 // Check if form has password field (as specified in condition)
                 if (
                   rule.condition?.has_password_field &&
-                  !form.querySelector('input[type="password"]')
+                  !formMatches(form, 'input[type="password"]')
                 ) {
                   continue;
                 }
@@ -1212,7 +1269,7 @@ if (window.checkExtensionLoaded) {
 
             case "resource_validation":
               // Check: If "*customcss" is loaded, it must come from https://aadcdn.msftauthimages.net/
-              const resourceNodes = document.querySelectorAll(
+              const resourceNodes = queryAll(
                 "[src], link[rel='stylesheet'][href]"
               );
               for (const node of resourceNodes) {
@@ -1235,7 +1292,7 @@ if (window.checkExtensionLoaded) {
 
             case "css_spoofing_validation":
               // Check: If page has Microsoft CSS patterns but posts to non-Microsoft domain
-              const pageSource = document.documentElement.outerHTML;
+              const pageSource = getPageSource();
               let cssMatches = 0;
 
               // Count CSS indicator matches
@@ -1251,14 +1308,16 @@ if (window.checkExtensionLoaded) {
               const minMatches = rule.condition?.minimum_css_matches || 2;
               if (cssMatches >= minMatches) {
                 // Check if form posts to non-Microsoft domain
-                const credentialForms = document.querySelectorAll("form");
+                const credentialForms = queryAll("form");
                 for (const form of credentialForms) {
                   // Check if form has credential fields
                   if (rule.condition?.has_credential_fields) {
-                    const hasEmail = form.querySelector(
+                    const hasEmail = formMatches(
+                      form,
                       'input[type="email"], input[name*="email"], input[id*="email"]'
                     );
-                    const hasPassword = form.querySelector(
+                    const hasPassword = formMatches(
+                      form,
                       'input[type="password"]'
                     );
 
@@ -1642,8 +1701,8 @@ if (window.checkExtensionLoaded) {
 
       const threats = [];
       let totalScore = 0;
-      const pageSource = document.documentElement.outerHTML;
-      const pageText = document.body?.textContent || "";
+      const pageSource = getPageSource();
+      const pageText = getPageText();
 
       logger.log(
         `🔍 Testing ${detectionRules.phishing_indicators.length} phishing indicators against:`
@@ -2074,7 +2133,7 @@ if (window.checkExtensionLoaded) {
 
       let score = 0;
       const triggeredRules = [];
-      const pageHTML = document.documentElement.outerHTML;
+      const pageHTML = getPageSource();
 
       // Process each rule from the detection rules file
       for (const rule of detectionRules.rules) {
@@ -2091,7 +2150,7 @@ if (window.checkExtensionLoaded) {
               break;
 
             case "form_action":
-              const forms = document.querySelectorAll(
+              const forms = queryAll(
                 rule.condition?.form_selector || "form"
               );
               for (const form of forms) {
@@ -2104,13 +2163,13 @@ if (window.checkExtensionLoaded) {
               break;
 
             case "form_action_validation":
-              const validationForms = document.querySelectorAll(
+              const validationForms = queryAll(
                 rule.condition?.form_selector || "form"
               );
               for (const form of validationForms) {
                 const action = form.action || "";
                 const hasPasswordField = rule.condition?.has_password_field
-                  ? form.querySelector('input[type="password"]')
+                  ? formMatches(form, 'input[type="password"]')
                   : true;
 
                 if (
@@ -2135,7 +2194,7 @@ if (window.checkExtensionLoaded) {
               if (rule.condition?.selectors) {
                 ruleTriggered = rule.condition.selectors.some((selector) => {
                   try {
-                    return document.querySelector(selector);
+                    return queryOne(selector);
                   } catch {
                     return false;
                   }
@@ -2150,7 +2209,7 @@ if (window.checkExtensionLoaded) {
               break;
 
             case "network":
-              const resourceNodes = document.querySelectorAll(
+              const resourceNodes = queryAll(
                 "[src], link[rel='stylesheet'][href]"
               );
               for (const node of resourceNodes) {
@@ -2202,7 +2261,7 @@ if (window.checkExtensionLoaded) {
               break;
 
             case "resource_validation":
-              const resourceValidationNodes = document.querySelectorAll(
+              const resourceValidationNodes = queryAll(
                 "[src], link[rel='stylesheet'][href]"
               );
               for (const node of resourceValidationNodes) {
@@ -2248,7 +2307,7 @@ if (window.checkExtensionLoaded) {
 
                 const hasCredentialFields = rule.condition
                   ?.has_credential_fields
-                  ? document.querySelector(
+                  ? queryOne(
                       'input[type="password"], input[name*="password"], input[name*="pass"]'
                     )
                   : true;
@@ -2257,7 +2316,7 @@ if (window.checkExtensionLoaded) {
                   cssMatches >= rule.condition.minimum_css_matches &&
                   hasCredentialFields
                 ) {
-                  const forms = document.querySelectorAll("form");
+                  const forms = queryAll("form");
                   for (const form of forms) {
                     const action = form.action || "";
                     if (
@@ -2334,7 +2393,7 @@ if (window.checkExtensionLoaded) {
   /**
    * Main protection logic following CORRECTED specification
    */
-  async function runProtection(isRerun = false) {
+  async function runProtection(isRerun = false, options = {}) {
     try {
       logger.log(
         `🚀 Starting protection analysis ${isRerun ? "(re-run)" : "(initial)"}`
@@ -2397,15 +2456,21 @@ if (window.checkExtensionLoaded) {
         return;
       }
 
-      // Rate limiting for DOM change re-runs
+      // Rate limiting for DOM change re-runs. A newly added password field
+      // bypasses the cap: decoy mutations must not be able to exhaust it
+      // before the credential form is inserted, including inside a shadow root.
       if (isRerun) {
         const now = Date.now();
-        if (now - lastScanTime < SCAN_COOLDOWN || scanCount >= MAX_SCANS) {
+        const bypassScanCap = options.bypassScanCap === true;
+        if (
+          !bypassScanCap &&
+          (now - lastScanTime < SCAN_COOLDOWN || scanCount >= MAX_SCANS)
+        ) {
           logger.debug("Scan rate limited or max scans reached");
           return;
         }
         lastScanTime = now;
-        scanCount++;
+        if (scanCount < MAX_SCANS) scanCount++;
       } else {
         protectionActive = true;
         scanCount = 1;
@@ -3685,8 +3750,8 @@ if (window.checkExtensionLoaded) {
       // Emergency fallback - if we can't load rules but detect MS elements, warn user
       try {
         const hasBasicMSElements =
-          document.querySelector('input[name="loginfmt"]') ||
-          document.querySelector("#i0116");
+          queryOne('input[name="loginfmt"]') ||
+          queryOne("#i0116");
         const isNotMSDomain = !location.hostname.includes(
           "microsoftonline.com"
         );
@@ -3723,6 +3788,7 @@ if (window.checkExtensionLoaded) {
         try {
           let shouldRerun = false;
           let newElementsAdded = false;
+          let credentialAdded = false;
 
           // Check if any significant changes occurred
           for (const mutation of mutations) {
@@ -3731,6 +3797,11 @@ if (window.checkExtensionLoaded) {
               for (const node of mutation.addedNodes) {
                 if (node.nodeType === Node.ELEMENT_NODE) {
                   newElementsAdded = true;
+                  observeKnownShadowRoots(node);
+                  if (queryAll('input[type="password"]', node).length > 0) {
+                    credentialAdded = true;
+                    shouldRerun = true;
+                  }
                   const tagName = node.tagName?.toLowerCase();
 
                   // Log what's being added for debugging
@@ -3832,8 +3903,9 @@ if (window.checkExtensionLoaded) {
           }
 
           if (shouldRerun && !showingBanner) {
-            // Check scan rate limiting
-            if (scanCount >= MAX_SCANS) {
+            // Check scan rate limiting. Password fields still rescan after the
+            // cap so a page cannot burn the budget with plain divs first.
+            if (scanCount >= MAX_SCANS && !credentialAdded) {
               logger.log(
                 "🛑 Maximum scans reached for this page, ignoring DOM changes"
               );
@@ -3847,8 +3919,9 @@ if (window.checkExtensionLoaded) {
               `Page now has ${document.querySelectorAll("*").length} elements`
             );
             // Enhanced debounce delay from 500ms to 1000ms for performance
+            const bypassScanCap = credentialAdded;
             setTimeout(() => {
-              runProtection(true);
+              runProtection(true, { bypassScanCap: bypassScanCap });
             }, 1000);
           } else if (showingBanner) {
             logger.debug(
@@ -3864,12 +3937,13 @@ if (window.checkExtensionLoaded) {
         }
       });
 
-      // Start observing
+      // Start observing light DOM and any shadow roots already attached.
       domObserver.observe(document.documentElement, {
         childList: true,
         subtree: true,
         attributes: false, // Don't monitor attributes to reduce noise
       });
+      observeKnownShadowRoots(document);
 
       // Fallback: Check periodically for content that might have loaded without triggering observer
       const checkInterval = setInterval(() => {
@@ -3882,13 +3956,18 @@ if (window.checkExtensionLoaded) {
 
         const currentElementCount = document.querySelectorAll("*").length;
         const hasSignificantContent = document.body?.textContent?.length > 1000;
+        const hasCredentialField =
+          queryAll('input[type="password"]').length > 0;
 
-        if (hasSignificantContent && currentElementCount > 50) {
+        if (
+          hasCredentialField ||
+          (hasSignificantContent && currentElementCount > 50)
+        ) {
           logger.log(
             "⏰ Fallback timer detected significant content - re-running analysis"
           );
           clearInterval(checkInterval);
-          runProtection(true);
+          runProtection(true, { bypassScanCap: hasCredentialField });
         }
       }, 2000);
 
@@ -4444,7 +4523,7 @@ if (window.checkExtensionLoaded) {
    */
   function disableFormSubmissions() {
     try {
-      const forms = document.querySelectorAll("form");
+      const forms = queryAll("form");
       for (const form of forms) {
         form.addEventListener(
           "submit",
@@ -4472,7 +4551,7 @@ if (window.checkExtensionLoaded) {
    */
   function disableCredentialInputs() {
     try {
-      const inputs = document.querySelectorAll(
+      const inputs = queryAll(
         'input[type="password"], input[type="email"], input[name*="user"], input[name*="login"], input[name*="email"]'
       );
       for (const input of inputs) {
@@ -4928,8 +5007,8 @@ if (window.checkExtensionLoaded) {
         info: {
           url: window.location.href,
           title: document.title,
-          hasPassword: !!document.querySelector('input[type="password"]'),
-          hasEmailField: !!document.querySelector('input[type="email"]'),
+          hasPassword: !!queryOne('input[type="password"]'),
+          hasEmailField: !!queryOne('input[type="email"]'),
         },
       });
       return true;

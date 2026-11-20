@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Phishing login clones inside open or closed shadow roots, and inside about:blank, srcdoc, data, or blob frames, were never scanned. Those pages can now be blocked, including a credential form that appears after the scan budget is exhausted.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00
