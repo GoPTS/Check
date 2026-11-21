@@ -2733,13 +2733,15 @@ if (window.checkExtensionLoaded) {
             `🚨 PHISHING INDICATORS FOUND on non-Microsoft page: ${phishingResult.threats.length} threats`
           );
 
-          // Check for critical threats that should be blocked regardless
+          // Honor action "block" for high and critical indicators. Requiring
+          // severity "critical" left single block rules (such as phi_017) as
+          // dismissible warnings, because fewer than WARNING_THRESHOLD matched.
           const criticalThreats = phishingResult.threats.filter(
-            (t) => t.severity === "critical" && t.action === "block"
+            (t) => t.action === "block"
           );
 
           if (criticalThreats.length > 0) {
-            const reason = `Critical phishing indicators detected on non-Microsoft page: ${criticalThreats
+            const reason = `Blocking phishing indicators detected on non-Microsoft page: ${criticalThreats
               .map((t) => t.id)
               .join(", ")}`;
 
