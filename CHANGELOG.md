@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A warning banner no longer stops later scans. A password field revealed after the email step on a fake Microsoft login page is blocked, including after the short DOM monitor has stopped.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00
