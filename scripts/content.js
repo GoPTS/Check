@@ -28,7 +28,8 @@ if (window.checkExtensionLoaded) {
   let lastScannedPageSource = null; // Store the page source from the last scan
   let lastPageSourceScanTime = 0; // When the page source was captured
   let developerConsoleLoggingEnabled = false; // Cache for developer console logging setting
-  let showingBanner = false; // Flag to prevent DOM monitoring loops when showing banners
+  let credentialObserver = null;
+  let forcedRescanState = "idle";
   const MAX_SCANS = 5; // Prevent infinite scanning - reduced for performance
   const SCAN_COOLDOWN = 1200; // 1200ms between scans - increased for performance
   const WARNING_THRESHOLD = 3; // Block if 4+ warning threats found (escalation threshold)
@@ -2334,7 +2335,8 @@ if (window.checkExtensionLoaded) {
   /**
    * Main protection logic following CORRECTED specification
    */
-  async function runProtection(isRerun = false) {
+  async function runProtection(isRerun = false, options = null) {
+    const bypassScanLimits = !!(options && options.bypassScanLimits);
     try {
       logger.log(
         `🚀 Starting protection analysis ${isRerun ? "(re-run)" : "(initial)"}`
@@ -2397,8 +2399,10 @@ if (window.checkExtensionLoaded) {
         return;
       }
 
-      // Rate limiting for DOM change re-runs
-      if (isRerun) {
+      // Rate limiting for DOM change re-runs. A password field appearing
+      // on a page we already warned about must still be judged: the banner
+      // and the scan budget used to drop that pass entirely.
+      if (isRerun && !bypassScanLimits) {
         const now = Date.now();
         if (now - lastScanTime < SCAN_COOLDOWN || scanCount >= MAX_SCANS) {
           logger.debug("Scan rate limited or max scans reached");
@@ -2406,9 +2410,11 @@ if (window.checkExtensionLoaded) {
         }
         lastScanTime = now;
         scanCount++;
-      } else {
+      } else if (!isRerun) {
         protectionActive = true;
         scanCount = 1;
+      } else {
+        lastScanTime = Date.now();
       }
 
       logger.log(
@@ -3700,6 +3706,137 @@ if (window.checkExtensionLoaded) {
     }
   }
 
+  const EXTENSION_UI_SELECTOR =
+    "#ms365-warning-banner, #ms365-valid-badge, #ms365-fallback-warning";
+
+  /**
+   * Banner and badge nodes are inserted by this script. They must not count
+   * as page changes, or showing a warning would schedule another scan.
+   */
+  function isExtensionUiNode(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+      return false;
+    }
+    if (
+      node.id === "ms365-warning-banner" ||
+      node.id === "ms365-valid-badge" ||
+      node.id === "ms365-fallback-warning" ||
+      node.id === "content-branding-colors"
+    ) {
+      return true;
+    }
+    return !!(
+      node.closest && node.closest(EXTENSION_UI_SELECTOR)
+    );
+  }
+
+  function nodeContainsPasswordField(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) {
+      return false;
+    }
+    if (node.matches && node.matches('input[type="password"]')) {
+      return true;
+    }
+    return !!(node.querySelector && node.querySelector('input[type="password"]'));
+  }
+
+  /**
+   * Queue one full rescan that ignores the banner and the general scan cap.
+   * A second password mutation during that scan schedules exactly one follow-up.
+   */
+  function scheduleForcedRescan() {
+    if (forcedRescanState === "scheduled" || forcedRescanState === "rerun") {
+      return;
+    }
+    if (forcedRescanState === "running") {
+      forcedRescanState = "rerun";
+      return;
+    }
+    forcedRescanState = "scheduled";
+    setTimeout(() => {
+      forcedRescanState = "running";
+      Promise.resolve(runProtection(true, { bypassScanLimits: true }))
+        .catch((error) => {
+          logger.warn("Credential rescan failed:", error?.message || error);
+        })
+        .finally(() => {
+          const again = forcedRescanState === "rerun";
+          forcedRescanState = "idle";
+          if (again) {
+            scheduleForcedRescan();
+          }
+        });
+    }, 50);
+  }
+
+  /**
+   * Keep watching for password fields after the general monitor stops.
+   * Two-step phishing pages reveal the password input only after the email
+   * step has already raised a warning banner.
+   */
+  function setupCredentialFieldWatch() {
+    try {
+      if (credentialObserver || !document.documentElement) {
+        return;
+      }
+
+      credentialObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (
+            mutation.type === "attributes" &&
+            mutation.target &&
+            mutation.target.matches &&
+            mutation.target.matches('input[type="password"]') &&
+            !isExtensionUiNode(mutation.target)
+          ) {
+            logger.warn(
+              "Password field type set after the initial scan - rechecking"
+            );
+            scheduleForcedRescan();
+            return;
+          }
+
+          if (mutation.type !== "childList") {
+            continue;
+          }
+
+          for (const node of mutation.addedNodes) {
+            if (
+              nodeContainsPasswordField(node) &&
+              !isExtensionUiNode(node)
+            ) {
+              logger.warn(
+                "Password field inserted after the initial scan - rechecking"
+              );
+              scheduleForcedRescan();
+              return;
+            }
+          }
+        }
+      });
+
+      credentialObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["type"],
+      });
+    } catch (error) {
+      logger.warn("Failed to watch for credential fields:", error.message);
+    }
+  }
+
+  function stopCredentialFieldWatch() {
+    try {
+      if (credentialObserver) {
+        credentialObserver.disconnect();
+        credentialObserver = null;
+      }
+    } catch (error) {
+      logger.warn("Failed to stop credential field watch:", error.message);
+    }
+  }
+
   /**
    * Set up DOM monitoring to catch delayed phishing content
    */
@@ -3730,6 +3867,9 @@ if (window.checkExtensionLoaded) {
               // Check for added forms, inputs, or scripts
               for (const node of mutation.addedNodes) {
                 if (node.nodeType === Node.ELEMENT_NODE) {
+                  if (isExtensionUiNode(node)) {
+                    continue;
+                  }
                   newElementsAdded = true;
                   const tagName = node.tagName?.toLowerCase();
 
@@ -3831,7 +3971,7 @@ if (window.checkExtensionLoaded) {
             if (shouldRerun) break;
           }
 
-          if (shouldRerun && !showingBanner) {
+          if (shouldRerun) {
             // Check scan rate limiting
             if (scanCount >= MAX_SCANS) {
               logger.log(
@@ -3850,10 +3990,6 @@ if (window.checkExtensionLoaded) {
             setTimeout(() => {
               runProtection(true);
             }, 1000);
-          } else if (showingBanner) {
-            logger.debug(
-              "🚫 Ignoring DOM changes while banner is being displayed"
-            );
           } else if (newElementsAdded) {
             logger.debug(
               "🔍 DOM changes detected but not significant enough to re-run analysis"
@@ -3873,13 +4009,6 @@ if (window.checkExtensionLoaded) {
 
       // Fallback: Check periodically for content that might have loaded without triggering observer
       const checkInterval = setInterval(() => {
-        if (showingBanner) {
-          logger.debug(
-            "🚫 Fallback timer skipping check while banner is displayed"
-          );
-          return;
-        }
-
         const currentElementCount = document.querySelectorAll("*").length;
         const hasSignificantContent = document.body?.textContent?.length > 1000;
 
@@ -4050,7 +4179,6 @@ if (window.checkExtensionLoaded) {
       const warningBanner = document.getElementById("ms365-warning-banner");
       if (warningBanner) {
         warningBanner.remove();
-        showingBanner = false; // Clear the flag when banner is removed
         logger.log("Cleared existing warning banner");
       }
 
@@ -4079,9 +4207,6 @@ if (window.checkExtensionLoaded) {
    */
   function showWarningBanner(reason, analysisData) {
     try {
-      // Set flag to prevent DOM monitoring loops
-      showingBanner = true;
-
       // Fetch branding configuration (uniform pattern: storage only, like applyBrandingColors)
       const fetchBranding = () => new Promise((resolve) => {
         try {
@@ -4248,7 +4373,7 @@ if (window.checkExtensionLoaded) {
           <strong style="display:block;">${bannerTitle}</strong>
           <small style="opacity:0.95;display:block;margin-top:2px;">${reason}${detailsText}</small>
         </div>
-        <button onclick="this.closest('#ms365-warning-banner').remove(); document.body.style.marginTop = '0'; window.showingBanner = false;" title="Dismiss" style="
+        <button onclick="this.closest('#ms365-warning-banner').remove(); document.body.style.marginTop = '0';" title="Dismiss" style="
           margin-left:auto;position:relative;background:rgba(255,255,255,0.2);border:1px solid rgba(255,255,255,0.3);
           color:#fff;padding:0;border-radius:4px;cursor:pointer;
           width:24px;height:24px;min-width:24px;min-height:24px;display:flex;align-items:center;justify-content:center;
@@ -4301,7 +4426,6 @@ if (window.checkExtensionLoaded) {
       logger.log("Warning banner displayed");
     } catch (error) {
       logger.error("Failed to show warning banner:", error.message);
-      showingBanner = false;
     }
   }
 
@@ -4748,6 +4872,7 @@ if (window.checkExtensionLoaded) {
 
       // Setup dynamic script monitoring early to catch any immediate script execution
       setupDynamicScriptMonitoring();
+      setupCredentialFieldWatch();
 
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", () => {
@@ -4952,6 +5077,7 @@ if (window.checkExtensionLoaded) {
   window.addEventListener("beforeunload", () => {
     try {
       stopDOMMonitoring();
+      stopCredentialFieldWatch();
       protectionActive = false;
     } catch (error) {
       logger.error("Cleanup failed:", error.message);
