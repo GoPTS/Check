@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A Microsoft login clone injected with `document.write()` after the initial scan is blocked. Replacing the document used to leave the DOM monitor on the discarded page, and the size-based fallback ignored compact login forms.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00
