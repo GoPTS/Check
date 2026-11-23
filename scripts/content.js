@@ -22,6 +22,12 @@ if (window.checkExtensionLoaded) {
   let trustedLoginPatterns = [];
   let microsoftDomainPatterns = [];
   let domObserver = null;
+  let monitoredRoot = null;
+  let domCheckInterval = null;
+  let domMonitorTimeout = null;
+  let documentRootObserver = null;
+  let documentRestartInProgress = false;
+  let documentReplacementScheduled = false;
   let lastScanTime = 0;
   let scanCount = 0;
   let lastDetectionResult = null; // Store last detection analysis
@@ -213,16 +219,91 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
-   * Re-initialize the DOM observer. This is critical for pages that use
-   * document.write() to replace the entire DOM after initial load.
+   * document.open()/document.write() after load keeps the same Document but
+   * replaces its <html> root. Observers attached to the old root never see
+   * the new tree. Watch the Document node itself and scan the replacement.
+   */
+  function setupDocumentReplacementWatch() {
+    if (documentRootObserver || !document.documentElement) {
+      return;
+    }
+
+    monitoredRoot = document.documentElement;
+    documentRootObserver = new MutationObserver(() => {
+      if (documentReplacementScheduled) {
+        return;
+      }
+      documentReplacementScheduled = true;
+      setTimeout(() => {
+        documentReplacementScheduled = false;
+        try {
+          reinitializeObserver();
+        } catch (error) {
+          logger.warn(
+            "Document replacement handler failed:",
+            error.message
+          );
+        }
+      }, 0);
+    });
+
+    try {
+      documentRootObserver.observe(document, { childList: true });
+    } catch (error) {
+      logger.warn("Failed to watch for document replacement:", error.message);
+    }
+  }
+
+  /**
+   * Re-initialize protection after document.write()/document.open() replaces
+   * the page. The previous root is detached, so the old DOM monitor is blind.
    */
   function reinitializeObserver() {
-    logger.warn("DOM appears to have been replaced. Re-initializing observer.");
+    const root = document.documentElement;
+    if (!root || root === monitoredRoot || documentRestartInProgress) {
+      return;
+    }
+
+    documentRestartInProgress = true;
+    logger.warn(
+      "Document was replaced. Restarting phishing protection on the new page."
+    );
+
     if (domObserver) {
       domObserver.disconnect();
       domObserver = null;
     }
-    setupDomObserver();
+    if (domCheckInterval) {
+      clearInterval(domCheckInterval);
+      domCheckInterval = null;
+    }
+    if (domMonitorTimeout) {
+      clearTimeout(domMonitorTimeout);
+      domMonitorTimeout = null;
+    }
+
+    // The new document gets its own scan budget. A banner on the discarded
+    // page must not suppress this pass.
+    scanCount = 0;
+    lastScanTime = 0;
+    protectionActive = false;
+    showingBanner = false;
+    monitoredRoot = root;
+
+    setupDOMMonitoring();
+    Promise.resolve(runProtection(false))
+      .catch((error) => {
+        logger.warn(
+          "Rescan after document replacement failed:",
+          error?.message || error
+        );
+      })
+      .finally(() => {
+        documentRestartInProgress = false;
+        if (document.documentElement !== monitoredRoot) {
+          reinitializeObserver();
+        }
+      });
   }
 
   /**
@@ -3864,15 +3945,21 @@ if (window.checkExtensionLoaded) {
         }
       });
 
-      // Start observing
-      domObserver.observe(document.documentElement, {
+      // Start observing the current root. document.write() detaches this node.
+      monitoredRoot = document.documentElement;
+      domObserver.observe(monitoredRoot, {
         childList: true,
         subtree: true,
         attributes: false, // Don't monitor attributes to reduce noise
       });
 
       // Fallback: Check periodically for content that might have loaded without triggering observer
-      const checkInterval = setInterval(() => {
+      domCheckInterval = setInterval(() => {
+        if (monitoredRoot && document.documentElement !== monitoredRoot) {
+          reinitializeObserver();
+          return;
+        }
+
         if (showingBanner) {
           logger.debug(
             "🚫 Fallback timer skipping check while banner is displayed"
@@ -3887,14 +3974,19 @@ if (window.checkExtensionLoaded) {
           logger.log(
             "⏰ Fallback timer detected significant content - re-running analysis"
           );
-          clearInterval(checkInterval);
+          clearInterval(domCheckInterval);
+          domCheckInterval = null;
           runProtection(true);
         }
       }, 2000);
 
-      // Stop monitoring after 30 seconds to prevent resource drain
-      setTimeout(() => {
-        clearInterval(checkInterval);
+      // Stop monitoring after 30 seconds to prevent resource drain.
+      // The document-root watcher stays up so a later document.write() is still scanned.
+      domMonitorTimeout = setTimeout(() => {
+        if (domCheckInterval) {
+          clearInterval(domCheckInterval);
+          domCheckInterval = null;
+        }
         stopDOMMonitoring();
         logger.log("🛑 DOM monitoring timeout reached - stopping");
       }, 30000);
@@ -4749,6 +4841,9 @@ if (window.checkExtensionLoaded) {
       // Setup dynamic script monitoring early to catch any immediate script execution
       setupDynamicScriptMonitoring();
 
+      // Catch document.write()/document.open() that swap out <html> after this script starts.
+      setupDocumentReplacementWatch();
+
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", () => {
           setTimeout(runProtection, 100); // Small delay to ensure DOM is stable
@@ -4952,6 +5047,18 @@ if (window.checkExtensionLoaded) {
   window.addEventListener("beforeunload", () => {
     try {
       stopDOMMonitoring();
+      if (domCheckInterval) {
+        clearInterval(domCheckInterval);
+        domCheckInterval = null;
+      }
+      if (domMonitorTimeout) {
+        clearTimeout(domMonitorTimeout);
+        domMonitorTimeout = null;
+      }
+      if (documentRootObserver) {
+        documentRootObserver.disconnect();
+        documentRootObserver = null;
+      }
       protectionActive = false;
     } catch (error) {
       logger.error("Cleanup failed:", error.message);
