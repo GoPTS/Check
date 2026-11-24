@@ -1165,6 +1165,42 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
+   * True when this form will submit a password field.
+   * HTML associates controls with a form either by nesting them or by the
+   * form="id" attribute. form.elements includes both. querySelector only sees
+   * descendants, so a password outside the tag was invisible and the form was
+   * skipped even though the browser posts that password with the form.
+   */
+  function formHasPasswordField(form) {
+    if (!form) return false;
+
+    const controls = form.elements;
+    if (controls && typeof controls.length === "number") {
+      for (let i = 0; i < controls.length; i++) {
+        const field = controls[i];
+        if (!field || String(field.tagName || "").toUpperCase() !== "INPUT") {
+          continue;
+        }
+        const type = String(
+          field.type ||
+            (typeof field.getAttribute === "function"
+              ? field.getAttribute("type")
+              : "") ||
+            ""
+        ).toLowerCase();
+        if (type === "password") return true;
+      }
+      return false;
+    }
+
+    try {
+      return !!form.querySelector('input[type="password"]');
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
    * Run blocking rules from rule file
    */
   function runBlockingRules() {
@@ -1186,10 +1222,11 @@ if (window.checkExtensionLoaded) {
                 rule.condition?.form_selector || "form"
               );
               for (const form of forms) {
-                // Check if form has password field (as specified in condition)
+                // Check if form has password field (as specified in condition).
+                // Include controls linked with the form attribute, not only descendants.
                 if (
                   rule.condition?.has_password_field &&
-                  !form.querySelector('input[type="password"]')
+                  !formHasPasswordField(form)
                 ) {
                   continue;
                 }
@@ -1258,9 +1295,7 @@ if (window.checkExtensionLoaded) {
                     const hasEmail = form.querySelector(
                       'input[type="email"], input[name*="email"], input[id*="email"]'
                     );
-                    const hasPassword = form.querySelector(
-                      'input[type="password"]'
-                    );
+                    const hasPassword = formHasPasswordField(form);
 
                     if (!hasEmail && !hasPassword) continue;
                   }
@@ -2110,7 +2145,7 @@ if (window.checkExtensionLoaded) {
               for (const form of validationForms) {
                 const action = form.action || "";
                 const hasPasswordField = rule.condition?.has_password_field
-                  ? form.querySelector('input[type="password"]')
+                  ? formHasPasswordField(form)
                   : true;
 
                 if (
