@@ -1165,6 +1165,105 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
+   * True when this form will submit a credential secret.
+   * A Microsoft login clone can keep name="passwd" (or autocomplete="current-password")
+   * while setting type="text" and masking the glyphs with -webkit-text-security.
+   * The browser still posts that value. input[type="password"] does not see it,
+   * so form-action blocking never ran and the copied Microsoft markers scored
+   * the page as legitimate. form.elements includes nested controls and controls
+   * linked with the form attribute.
+   */
+  function formHasCredentialSecret(form) {
+    if (!form) return false;
+
+    const fields = [];
+    const controls = form.elements;
+    if (controls && typeof controls.length === "number") {
+      for (let i = 0; i < controls.length; i++) {
+        fields.push(controls[i]);
+      }
+    } else {
+      try {
+        form.querySelectorAll("input").forEach((field) => fields.push(field));
+      } catch (error) {
+        return false;
+      }
+    }
+
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i];
+      if (!field || String(field.tagName || "").toUpperCase() !== "INPUT") {
+        continue;
+      }
+
+      const rawType =
+        (typeof field.getAttribute === "function" &&
+          field.getAttribute("type")) ||
+        field.type ||
+        "text";
+      const type = String(rawType).toLowerCase().trim();
+      if (type === "password") return true;
+      if (
+        type === "hidden" ||
+        type === "submit" ||
+        type === "button" ||
+        type === "checkbox" ||
+        type === "radio" ||
+        type === "image" ||
+        type === "file" ||
+        type === "reset"
+      ) {
+        continue;
+      }
+
+      const autocomplete = String(
+        (typeof field.getAttribute === "function" &&
+          field.getAttribute("autocomplete")) ||
+          ""
+      ).toLowerCase();
+      if (
+        autocomplete.includes("current-password") ||
+        autocomplete.includes("new-password")
+      ) {
+        return true;
+      }
+
+      const style = String(
+        (typeof field.getAttribute === "function" &&
+          field.getAttribute("style")) ||
+          ""
+      )
+        .toLowerCase()
+        .replace(/\s+/g, "");
+      if (
+        style.includes("-webkit-text-security:") ||
+        style.includes("text-security:")
+      ) {
+        return true;
+      }
+
+      const name = String(
+        (typeof field.getAttribute === "function" &&
+          field.getAttribute("name")) ||
+          field.name ||
+          ""
+      ).toLowerCase();
+      const id = String(
+        (typeof field.getAttribute === "function" && field.getAttribute("id")) ||
+          field.id ||
+          ""
+      ).toLowerCase();
+      if (
+        /(?:^|[^a-z])(?:passwd|password|pwd)(?:[^a-z]|$)/.test(name + " " + id)
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
    * Run blocking rules from rule file
    */
   function runBlockingRules() {
@@ -1186,10 +1285,10 @@ if (window.checkExtensionLoaded) {
                 rule.condition?.form_selector || "form"
               );
               for (const form of forms) {
-                // Check if form has password field (as specified in condition)
+                // Password, masked text, or passwd-named controls all submit the secret.
                 if (
                   rule.condition?.has_password_field &&
-                  !form.querySelector('input[type="password"]')
+                  !formHasCredentialSecret(form)
                 ) {
                   continue;
                 }
@@ -1258,9 +1357,7 @@ if (window.checkExtensionLoaded) {
                     const hasEmail = form.querySelector(
                       'input[type="email"], input[name*="email"], input[id*="email"]'
                     );
-                    const hasPassword = form.querySelector(
-                      'input[type="password"]'
-                    );
+                    const hasPassword = formHasCredentialSecret(form);
 
                     if (!hasEmail && !hasPassword) continue;
                   }
@@ -2110,7 +2207,7 @@ if (window.checkExtensionLoaded) {
               for (const form of validationForms) {
                 const action = form.action || "";
                 const hasPasswordField = rule.condition?.has_password_field
-                  ? form.querySelector('input[type="password"]')
+                  ? formHasCredentialSecret(form)
                   : true;
 
                 if (

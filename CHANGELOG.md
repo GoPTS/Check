@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Credential-form blocking now treats masked or password-named fields as secrets. A Microsoft login clone can no longer post the password to an attacker by using `type="text"` (with `-webkit-text-security` or `name="passwd"`) instead of `type="password"`.
+
 ### d02e0d1 - Merge branch 'main' of https://github.com/CyberDrain/ProjectX
 - Contributor: John Duprey
 - Date: 2025-08-29T14:27:08+02:00
