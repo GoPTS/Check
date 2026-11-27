@@ -2332,6 +2332,39 @@ if (window.checkExtensionLoaded) {
   }
 
   /**
+   * Protection settings must follow enterprise policy.
+   * chrome.storage.managed overrides local config in ConfigManager, but a
+   * direct local read ignores that merge. A user who turned blocking off, or
+   * allowlisted every URL, would stay unprotected after Intune/GPO locked the
+   * opposite policy — the options page shows the managed value and never
+   * rewrites the stale local copy.
+   */
+  async function loadProtectionConfig() {
+    try {
+      const response = await chrome.runtime.sendMessage({ type: "GET_CONFIG" });
+      if (
+        response &&
+        response.success &&
+        response.config &&
+        typeof response.config === "object"
+      ) {
+        return response.config;
+      }
+    } catch (error) {
+      logger.warn(
+        "Merged config unavailable, using local settings:",
+        error.message
+      );
+    }
+
+    return await new Promise((resolve) => {
+      chrome.storage.local.get(["config"], (result) => {
+        resolve(result.config || {});
+      });
+    });
+  }
+
+  /**
    * Main protection logic following CORRECTED specification
    */
   async function runProtection(isRerun = false) {
@@ -2345,12 +2378,8 @@ if (window.checkExtensionLoaded) {
         } chars content`
       );
 
-      // Load configuration to check protection settings and URL allowlist
-      const config = await new Promise((resolve) => {
-        chrome.storage.local.get(["config"], (result) => {
-          resolve(result.config || {});
-        });
-      });
+      // Merged config: enterprise managed policy overrides local settings.
+      const config = await loadProtectionConfig();
 
       // Store config globally for URL allowlist checking
       window.checkUserConfig = config;
