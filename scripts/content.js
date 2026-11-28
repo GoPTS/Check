@@ -167,6 +167,45 @@ if (window.checkExtensionLoaded) {
     }
   }
 
+  /**
+   * Customer-published hosts are not safe to skip.
+   * script.google.com serves arbitrary Apps Script HTML. sites.google.com and
+   * SharePoint tenants are scanned once a credential field is present, because
+   * the broad Google and Microsoft patterns would otherwise skip them entirely.
+   */
+  function mustScanCustomerPublishedPage(url, hasCredentialField) {
+    let host = "";
+    try {
+      host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    } catch (error) {
+      return false;
+    }
+
+    if (host === "script.google.com") {
+      return true;
+    }
+
+    if (!hasCredentialField) {
+      return false;
+    }
+
+    if (host === "sites.google.com") {
+      return true;
+    }
+
+    return host === "sharepoint.com" || host.endsWith(".sharepoint.com");
+  }
+
+  function pageHasCredentialField() {
+    try {
+      return !!document.querySelector(
+        'input[type="password"], input[name="passwd" i], input[name="password" i]'
+      );
+    } catch (error) {
+      return false;
+    }
+  }
+
   // Conditional logger that respects developer console logging setting
   const logger = {
     log: (...args) => {
@@ -1931,6 +1970,12 @@ if (window.checkExtensionLoaded) {
    * Now includes both detection rules exclusions AND user-configured URL allowlist
    */
   function checkDomainExclusion(url) {
+    // *.google.com also matches Apps Script and Google Sites, where anyone can
+    // publish a Microsoft login clone. Honor an explicit user allowlist only.
+    if (mustScanCustomerPublishedPage(url, pageHasCredentialField())) {
+      return checkUserUrlAllowlist(url);
+    }
+
     if (detectionRules?.exclusion_system?.domain_patterns) {
       const rulesExcluded =
         detectionRules.exclusion_system.domain_patterns.some((pattern) => {
@@ -2627,8 +2672,16 @@ if (window.checkExtensionLoaded) {
         return; // EXIT IMMEDIATELY - can't be phishing on trusted domain
       }
 
-      // Check for general Microsoft domains (non-login pages)
-      if (isMicrosoftDomain(window.location.href)) {
+      // Check for general Microsoft domains (non-login pages).
+      // SharePoint tenants match microsoft_domain_patterns, but a tenant can
+      // host a credential form. Those pages continue into detection.
+      if (
+        isMicrosoftDomain(window.location.href) &&
+        !mustScanCustomerPublishedPage(
+          window.location.href,
+          pageHasCredentialField()
+        )
+      ) {
         logger.log(
           "ℹ️ MICROSOFT DOMAIN (NON-LOGIN) - No phishing scan needed, no badge shown"
         );
